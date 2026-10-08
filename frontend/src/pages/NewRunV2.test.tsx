@@ -1053,6 +1053,167 @@ describe('NewRunV2', () => {
     });
   });
 
+  describe('plugin inputs', () => {
+    const MLFLOW_PLUGINS_INPUT = { mlflow: { experiment_name: 'demo', nested: { tags: ['a'] } } };
+
+    async function waitForStartButton(enabled: boolean) {
+      const startButton = await screen.findByText('Start');
+      await waitFor(() => {
+        expect(startButton.closest('button')?.disabled).toEqual(!enabled);
+      });
+      return startButton;
+    }
+
+    function addPluginInput(name: string, config: string) {
+      fireEvent.click(screen.getByText('Add plugin input'));
+      const names = screen.getAllByLabelText('Plugin name');
+      const configs = screen.getAllByLabelText('Plugin config (JSON)');
+      fireEvent.change(names[names.length - 1], { target: { value: name } });
+      fireEvent.change(configs[configs.length - 1], { target: { value: config } });
+    }
+
+    it('shows no plugin entries and sends no plugins_input by default', async () => {
+      const createRunSpy = vi.spyOn(Apis.runServiceApiV2, 'createRun');
+      createRunSpy.mockResolvedValue(API_UI_CREATED_NEW_RUN_DETAILS);
+
+      renderNewRunV2();
+
+      expect(screen.getByText('Plugin inputs')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Plugin name')).toBeNull();
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRunSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(createRunSpy.mock.calls[0][0].plugins_input).toBeUndefined();
+    });
+
+    it('submits plugin inputs with a new run', async () => {
+      const createRunSpy = vi.spyOn(Apis.runServiceApiV2, 'createRun');
+      createRunSpy.mockResolvedValue(API_UI_CREATED_NEW_RUN_DETAILS);
+
+      renderNewRunV2();
+      addPluginInput(' mlflow ', JSON.stringify(MLFLOW_PLUGINS_INPUT.mlflow));
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRunSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ plugins_input: MLFLOW_PLUGINS_INPUT }),
+        );
+      });
+    });
+
+    it('submits plugin inputs with a new recurring run', async () => {
+      const createRecurringRunSpy = vi.spyOn(Apis.recurringRunServiceApi, 'createRecurringRun');
+      createRecurringRunSpy.mockResolvedValue(API_UI_CREATED_NEW_RECURRING_RUN_DETAILS);
+
+      renderNewRunV2({ chosenExperiment: DEFAULT_EXPERIMENT });
+      fireEvent.click(screen.getByLabelText('Recurring'));
+      addPluginInput('mlflow', JSON.stringify(MLFLOW_PLUGINS_INPUT.mlflow));
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRecurringRunSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            mode: RecurringRunMode.ENABLE,
+            plugins_input: MLFLOW_PLUGINS_INPUT,
+          }),
+        );
+      });
+    });
+
+    it.each([
+      ['invalid JSON', '{"experiment_name": '],
+      ['an empty config', ''],
+      ['a JSON array', '["demo"]'],
+      ['null', 'null'],
+    ])('blocks submit when the config is %s', async (_, config) => {
+      renderNewRunV2();
+      addPluginInput('mlflow', config);
+
+      await waitForStartButton(false);
+      expect(screen.getByText('Plugin config must be a valid JSON object.')).toBeInTheDocument();
+    });
+
+    it('blocks submit when the plugin name is empty', async () => {
+      renderNewRunV2();
+      addPluginInput('  ', '{}');
+
+      await waitForStartButton(false);
+      expect(screen.getByText('Plugin name cannot be empty.')).toBeInTheDocument();
+    });
+
+    it('blocks submit when a plugin name is used twice', async () => {
+      renderNewRunV2();
+      addPluginInput('mlflow', '{}');
+      addPluginInput('mlflow ', '{}');
+
+      await waitForStartButton(false);
+      expect(screen.getAllByText('Plugin "mlflow" is specified more than once.')).toHaveLength(2);
+    });
+
+    it('re-enables submit and sends no plugins_input once the invalid entry is removed', async () => {
+      const createRunSpy = vi.spyOn(Apis.runServiceApiV2, 'createRun');
+      createRunSpy.mockResolvedValue(API_UI_CREATED_NEW_RUN_DETAILS);
+
+      renderNewRunV2();
+      addPluginInput('mlflow', 'not json');
+      await waitForStartButton(false);
+
+      fireEvent.click(screen.getByText('Remove plugin input'));
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRunSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(createRunSpy.mock.calls[0][0].plugins_input).toBeUndefined();
+    });
+
+    it('prefills plugin inputs when cloning a run and submits them unchanged', async () => {
+      const createRunSpy = vi.spyOn(Apis.runServiceApiV2, 'createRun');
+      createRunSpy.mockResolvedValue(API_UI_CREATED_CLONING_RUN_DETAILS);
+
+      renderClonedRunV2({
+        existingRunId: TEST_RUN_ID,
+        existingRun: { ...API_UI_CREATED_NEW_RUN_DETAILS, plugins_input: MLFLOW_PLUGINS_INPUT },
+      });
+
+      expect(screen.getByLabelText('Plugin name')).toHaveValue('mlflow');
+      expect(screen.getByLabelText('Plugin config (JSON)')).toHaveValue(
+        JSON.stringify(MLFLOW_PLUGINS_INPUT.mlflow, null, 2),
+      );
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRunSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ plugins_input: MLFLOW_PLUGINS_INPUT }),
+        );
+      });
+    });
+
+    it('prefills plugin inputs when cloning a recurring run', async () => {
+      const createRecurringRunSpy = vi.spyOn(Apis.recurringRunServiceApi, 'createRecurringRun');
+      createRecurringRunSpy.mockResolvedValue(API_UI_CREATED_CLONING_RECURRING_RUN_DETAILS);
+
+      renderClonedRunV2({
+        existingRecurringRunId: TEST_RECURRING_RUN_ID,
+        existingRecurringRun: {
+          ...API_UI_CREATED_NEW_RECURRING_RUN_DETAILS,
+          plugins_input: MLFLOW_PLUGINS_INPUT,
+        },
+      });
+
+      expect(screen.getByLabelText('Plugin name')).toHaveValue('mlflow');
+      fireEvent.click(await waitForStartButton(true));
+
+      await waitFor(() => {
+        expect(createRecurringRunSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ plugins_input: MLFLOW_PLUGINS_INPUT }),
+        );
+      });
+    });
+  });
+
   describe('error dialog uses the submitted run type', () => {
     it('shows "Recurring run creation failed" even if user flips radio to one-off before rejection', async () => {
       let rejectRecurringRun!: (reason: unknown) => void;

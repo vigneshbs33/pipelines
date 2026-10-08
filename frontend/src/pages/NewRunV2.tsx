@@ -236,6 +236,58 @@ function getDefaultRunName(
   return '';
 }
 
+type PluginsInput = { [pluginName: string]: object };
+
+interface PluginInputEntry {
+  name: string;
+  config: string;
+}
+
+function getInitialPluginInputs(pluginsInput?: PluginsInput): PluginInputEntry[] {
+  return Object.entries(pluginsInput ?? {}).map(([name, config]) => ({
+    name,
+    config: JSON.stringify(config, null, 2),
+  }));
+}
+
+function parsePluginConfig(config: string): object | undefined {
+  try {
+    const parsed = JSON.parse(config);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getPluginInputErrorMessage(
+  entry: PluginInputEntry,
+  entries: PluginInputEntry[],
+): string | null {
+  const name = entry.name.trim();
+  if (!name) {
+    return 'Plugin name cannot be empty.';
+  }
+  if (entries.filter((other) => other.name.trim() === name).length > 1) {
+    return `Plugin "${name}" is specified more than once.`;
+  }
+  if (!parsePluginConfig(entry.config)) {
+    return 'Plugin config must be a valid JSON object.';
+  }
+  return null;
+}
+
+// Start stays disabled until every entry is valid, so each config parses here.
+function getPluginsInput(entries: PluginInputEntry[]): PluginsInput | undefined {
+  if (!entries.length) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    entries.map((entry) => [entry.name.trim(), parsePluginConfig(entry.config)!]),
+  );
+}
+
 function NewRunV2(props: NewRunV2Props) {
   // List of elements we need to create Pipeline Run.
   const {
@@ -348,6 +400,17 @@ function NewRunV2(props: NewRunV2Props) {
     parameterStateKey,
     initialParameterState.isValid,
   );
+  const clonedPluginsInput = cloneOrigin.isRecurring
+    ? cloneOrigin.recurringRun?.plugins_input
+    : cloneOrigin.run?.plugins_input;
+  const [pluginInputs, setPluginInputs] = useKeyedState<PluginInputEntry[]>(
+    JSON.stringify(clonedPluginsInput ?? null),
+    getInitialPluginInputs(clonedPluginsInput),
+  );
+  const pluginInputErrorMessages = pluginInputs.map((entry) =>
+    getPluginInputErrorMessage(entry, pluginInputs),
+  );
+  const isPluginInputValid = pluginInputErrorMessages.every((message) => message === null);
   const labelTextAdjective = isRecurringRun ? 'recurring ' : '';
   const usePipelineFromRunLabel = `Using pipeline from existing ${labelTextAdjective} run.`;
 
@@ -359,7 +422,11 @@ function NewRunV2(props: NewRunV2Props) {
     isTemplatePullSuccess,
   );
   const isStartButtonEnabled =
-    !!templateString && !validationErrorMessage && isParameterValid && isMaxConcurrentRunValid;
+    !!templateString &&
+    !validationErrorMessage &&
+    isParameterValid &&
+    isMaxConcurrentRunValid &&
+    isPluginInputValid;
 
   const titleVerb = cloneOrigin.isClone ? 'Clone' : 'Start';
   const titleAdjective = cloneOrigin.isClone ? '' : 'new';
@@ -433,6 +500,7 @@ function NewRunV2(props: NewRunV2Props) {
         parameters: runtimeParameters,
       },
       service_account: serviceAccount,
+      plugins_input: getPluginsInput(pluginInputs),
     };
 
     let newRecurringRun: V2beta1RecurringRun = Object.assign(
@@ -742,6 +810,12 @@ function NewRunV2(props: NewRunV2Props) {
           setIsValidInput={handleParameterValidityChange}
         />
 
+        <PluginInputs
+          pluginInputs={pluginInputs}
+          errorMessages={pluginInputErrorMessages}
+          onChange={setPluginInputs}
+        />
+
         {/* Create/Cancel buttons */}
         <div className={classes(commonCss.flex, padding(20, 'tb'))}>
           <BusyButton
@@ -771,6 +845,64 @@ function NewRunV2(props: NewRunV2Props) {
 }
 
 export default NewRunV2;
+
+interface PluginInputsProps {
+  pluginInputs: PluginInputEntry[];
+  errorMessages: Array<string | null>;
+  onChange: (pluginInputs: PluginInputEntry[]) => void;
+}
+
+function PluginInputs({ pluginInputs, errorMessages, onChange }: PluginInputsProps) {
+  const updateEntry = (index: number, update: Partial<PluginInputEntry>) => {
+    onChange(pluginInputs.map((entry, i) => (i === index ? { ...entry, ...update } : entry)));
+  };
+
+  return (
+    <div>
+      <div className={commonCss.header}>Plugin inputs</div>
+      <div>
+        Optional. Pass run-level settings to plugins enabled on the API server, as a JSON object per
+        plugin.
+      </div>
+      {pluginInputs.map((entry, index) => (
+        <div key={index} className={classes(padding(10, 't'))}>
+          <Input
+            id={`pluginName-${index}`}
+            label='Plugin name'
+            value={entry.name}
+            onChange={(event) => updateEntry(index, { name: event.target.value })}
+            placeholder='mlflow'
+            variant='outlined'
+          />
+          <Input
+            id={`pluginConfig-${index}`}
+            label='Plugin config (JSON)'
+            multiline={true}
+            minRows={3}
+            value={entry.config}
+            onChange={(event) => updateEntry(index, { config: event.target.value })}
+            variant='outlined'
+          />
+          <div className={commonCss.flex}>
+            <Button onClick={() => onChange(pluginInputs.filter((_, i) => i !== index))}>
+              Remove plugin input
+            </Button>
+            <div className={classes(padding(20, 'r'))} style={{ color: 'red' }}>
+              {errorMessages[index]}
+            </div>
+          </div>
+        </div>
+      ))}
+      <Button
+        color='primary'
+        startIcon={<AddIcon />}
+        onClick={() => onChange([...pluginInputs, { name: '', config: '{}' }])}
+      >
+        Add plugin input
+      </Button>
+    </div>
+  );
+}
 
 const PIPELINE_SELECTOR_COLUMNS = [
   {
